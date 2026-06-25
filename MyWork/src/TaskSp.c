@@ -4,26 +4,19 @@
  *  Created on: Sep 12, 2023
  *      Author: lq
  */
-#include <GetVer.h>
 #include "TaskSp.h"
 #include "stdlib.h"
 #include "string.h"
 
 #include "main.h"
+#include "adc.h"
 
 #include "SerialPort.h"
-#include "Pwm.h"
+
 #include "MyTmr.h"
-#include "Critical.h"
-#include "Consts.h"
 #include "MyPrintf.h"
+#include "rms.h"
 #include "Tasks.h"
-#include "OPT4001.h"
-#include "AscHex.h"
-#include "MyCrc.h"
-#include "MyI2C.h"
-#include "ScanAdc.h"
-#include "Config.h"
 
 /********************************************/
 // #define TASK_CLI
@@ -325,7 +318,7 @@ CMD_RET_t Help(int argc, char **argv)
 	return ret;
 }
 
-uint8_t TaskSp()
+uint8_t TaskSpRx()
 {
 	PT_BEGIN(this_pt);
 	PrintVersion();
@@ -414,261 +407,71 @@ static void this_Init()
 
 #ifdef TASK_SLV
 
-#define CMD_INDEX_SLVID 0
-#define CMD_INDEX_CODE 1
-
-// All commands
-#define READ_HOLDING_REGISTERS 0x03
-#define READ_INPUT_REGISTERS 0x04
-#define WRITE_SINGLE_REGISTER 0x06
-
-int CMD_ReadHoldingRegisters(int len);
-int CMD_ReadInputRegisters(int len);
-int CMD_WriteSingleRegister(int len);
-
-typedef struct cmd_t
-{
-	/*
-	 *	@brief	Command function pointer
-	 *	@param	len:	data length
-	 *	@retval	length of reply data
-	 */
-	int (*func)(int len);
-	/*
-	 *	@brief	Command ID / MI code
-	 */
-	uint8_t cmd_id;
-	/*
-	 *	@brief	Command length after decode. Stripped STX, CRC and ETX.
-	 *	@note 0 means variable length
-	 */
-	uint16_t cmd_len;
-} cmd_t;
-
-/// @brief  cmd_len includes address+code+data+crc=all bytes
-const cmd_t SLV_CMD[] = {
-	{CMD_ReadHoldingRegisters, READ_HOLDING_REGISTERS, 8},
-	{CMD_ReadInputRegisters, READ_INPUT_REGISTERS, 8},
-	{CMD_WriteSingleRegister, WRITE_SINGLE_REGISTER, 8},
-};
-
-#define INVALID_FUNCTION 1
-#define INVALID_ADDRESS 2
-#define INVALID_VALUE 3
-
-#define SP1_TX_BUF_SIZE 256
-static uint8_t sp1TxBuf[SP1_TX_BUF_SIZE];
-
-#define SP1_RX_BUF_SIZE 256
-static uint8_t sp1RxBuf[SP1_RX_BUF_SIZE];
-
-static int ModbusException(uint8_t exception)
-{
-	uint8_t *p = sp1TxBuf;
-	*p++ = SLV_ID;
-	*p++ = sp1RxBuf[CMD_INDEX_CODE] | 0x80;
-	*p++ = exception;
-	return p - sp1TxBuf;
-}
-
-#define SLV_TIMEOUT 10000
 static void this_Init()
 {
-	SetMsTmr(this_tmr, SLV_TIMEOUT);
 	SerialPortStartRx(this_sp);
 }
-#define RTU_FRAME_SLOT 38 // Modbus char = 8-N-2(11-bit) => 11*3.5=38.5
-#if 0
-char *tx_array = "abcdefghijklmnopqrstuvwxyz";
-PT_BEGIN(this_pt);
-for (;;)
-{
-	SetMsTmr(this_tmr, 2000);
-	PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr));
-	SpErrorCheck(this_sp);
-	wdt |= WDT_TASK_SP;
-	SpWrite(this_sp, tx_array, 26);
-}
-PT_END(this_pt);
-#endif
-uint8_t TaskSp()
-{
-	SpErrorCheck(this_sp);
-	wdt |= WDT_TASK_SP;
-	// uint32_t cnt = GetBitCnt();
-	if (this_sp->flag)
-	{
-		this_sp->flag = 0;
-		int rxlen = 0;
-		while (SpAnyChars(this_sp))
-		{
-			sp1RxBuf[rxlen++] = SpGetchar(this_sp);
-		}
 
-		if (rxlen >= 4)
+__attribute__((aligned(4))) volatile uint16_t adc_raw[ADC_LENGTH];
+__attribute__((aligned(4))) uint16_t adc_zero_phase[ADC_LENGTH];
+__attribute__((aligned(4))) uint16_t adc_forward[ADC_LENGTH];
+
+uint8_t TaskSpRx()
+{
+	PT_BEGIN(this_pt);
+	for (;;)
+	{
+		SpErrorCheck(this_sp);
+		wdt |= WDT_TASK_SP;
+		// if (this_sp->flag == 1)
 		{
-			// if (rxlen <= SP1_RX_BUF_SIZE)
-			{
-				if ((sp1RxBuf[CMD_INDEX_SLVID] == SLV_ID || sp1RxBuf[CMD_INDEX_SLVID] == BROADCAST_ID) &&
-					MODBUS_CRC16(sp1RxBuf, rxlen - 2) == Cnvt_GetU16lh(sp1RxBuf + rxlen - 2))
+			this_sp->flag = 0;
+			RB_Clear(&this_sp->rx_ringbuf);
+			SetMsTmr(this_tmr, 50);
+			start_rms_adc(adc_raw);
+			PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr) || rms_flag == 1);
+			if (rms_flag == 1)
+			{ // complete
+				memcpy(adc_forward, adc_raw, sizeof(adc_raw));
+				memcpy(adc_zero_phase, adc_raw, sizeof(adc_raw));
+
+				forward_low_pass_filter(adc_forward, FILTER);
+				zero_phase_low_pass_filter(adc_zero_phase, FILTER);
+
+				uint32_t rms_raw_f = get_rms(&adc_raw[FLT_MORE * 2]);		// ignore headers
+				uint32_t rms_forward = get_rms(&adc_forward[FLT_MORE * 2]); // ignore header
+
+				uint32_t rms_raw_z = get_rms(&adc_raw[FLT_MORE]);			  // ignore headers and tail
+				uint32_t rms_zero_phase = get_rms(&adc_zero_phase[FLT_MORE]); // ignore header and tail
+
+				MyPrintf("\nN, Raw, Forward, ZeroPhase\n");
+				for (int i = 0; i < ADC_LENGTH; i++)
 				{
-					int txlen = 0;
-					for (int i = 0; i < sizeof(SLV_CMD) / sizeof(SLV_CMD[0]); i++)
-					{
-						if (sp1RxBuf[CMD_INDEX_CODE] == SLV_CMD[i].cmd_id &&
-							(SLV_CMD[i].cmd_len == 0 || SLV_CMD[i].cmd_len == rxlen))
-						{
-							txlen = (*SLV_CMD[i].func)(rxlen);
-						}
-						else if (i == (sizeof(SLV_CMD) / sizeof(SLV_CMD[0]) - 1))
-						{
-							txlen = ModbusException(INVALID_FUNCTION);
-						}
-						if (txlen > 0)
-						{
-							if (sp1RxBuf[CMD_INDEX_SLVID] == SLV_ID)
-							{
-								Cnvt_PutU16lh(MODBUS_CRC16(sp1TxBuf, txlen), sp1TxBuf + txlen);
-								SpWrite(this_sp, sp1TxBuf, txlen + 2);
-							}
-							break;
-						}
-					} // end of for (int i = 0; i < sizeof(SLV_CMD) / sizeof(SLV_CMD[0]); i++)
+					MyPrintf("%u, %u, %u, %u\n", i + 1, adc_raw[i], adc_forward[i], adc_zero_phase[i]);
 				}
-			} // end of if (rxlen <= SP1_RX_BUF_SIZE)
-			// SerialPortStartRx(this_sp);
+				MyPrintf("\nRMS:\n"
+						 " Forward: raw = %u(%umv), filtered = %u(%umv) , VAV = %u\n"
+						 " ZeroPhase: raw = %u(%umv), filtered = %u(%umv), VAC = %u\n",
+						 rms_raw_f, rms_raw_f * 3300 / 4096,
+						 rms_forward, rms_forward * 3300 / 4096,
+						 rms_forward * 15026 / 65536,
+						 rms_raw_z, rms_raw_z * 3300 / 4096,
+						 rms_zero_phase, rms_zero_phase * 3300 / 4096,
+						 rms_zero_phase * 15026 / 65536);
+			}
+			else
+			{ // timeout
+				HAL_ADC_Stop_DMA(&hadc);
+				MyPuts("ADC timeout\n");
+			}
+			// MyPuts("Press anykey ...\n");
 		}
+		SetMsTmr(this_tmr, 1000 - 50);
+		PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr));
 	}
-	return 1;
+	PT_END(this_pt);
 }
 
-int CMD_ReadHoldingRegisters(int len)
-{
-#define CMD_03_ADDR 2
-#define CMD_03_LEN 4
-	uint16_t addr = Cnvt_GetU16hl(sp1RxBuf + CMD_03_ADDR);
-	uint16_t len03 = Cnvt_GetU16hl(sp1RxBuf + CMD_03_LEN);
-	int txlen;
-	if (addr > 1)
-	{
-		txlen = ModbusException(INVALID_ADDRESS);
-	}
-	else if (len03 == 0 || (len03 + addr) > 2)
-	{
-		txlen = ModbusException(INVALID_VALUE);
-	}
-	else
-	{
-		uint16_t holding_reg[2];
-		holding_reg[0] = st_conspicuity; // flashing status
-		holding_reg[1] = st_pwm;		 // brightness
-
-		uint8_t *p = sp1TxBuf;
-		*p++ = SLV_ID;
-		*p++ = sp1RxBuf[CMD_INDEX_CODE];
-		*p++ = len03 * 2;
-		for (int i = 0; i < len03; i++)
-		{
-			p = Cnvt_PutU16hl(holding_reg[i + addr], p);
-		}
-		txlen = p - sp1TxBuf;
-	}
-	return txlen;
-}
-
-int CMD_ReadInputRegisters(int len)
-{
-#define CMD_04_ADDR 2
-#define CMD_04_LEN 4
-#define CMD_04_REGS_SIZE 11
-	uint16_t addr = Cnvt_GetU16hl(sp1RxBuf + CMD_04_ADDR);
-	uint16_t len04 = Cnvt_GetU16hl(sp1RxBuf + CMD_04_LEN);
-	int txlen;
-	if (addr >= CMD_04_REGS_SIZE)
-	{
-		txlen = ModbusException(INVALID_ADDRESS);
-	}
-	else if (len04 == 0 || (len04 + addr) > CMD_04_REGS_SIZE)
-	{
-		txlen = ModbusException(INVALID_VALUE);
-	}
-	else
-	{
-		extern const uint16_t PCB_NUMBER;
-		extern const uint16_t FW_BUILD_HEX[2];
-		extern const uint16_t FW_VERSION;
-		uint16_t in_reg[CMD_04_REGS_SIZE];
-		uint16_t *p_reg = in_reg;
-		*p_reg++ = PCB_NUMBER;						 // PCB number
-		*p_reg++ = FW_BUILD_HEX[0];					 // firmware build date
-		*p_reg++ = FW_BUILD_HEX[1];					 // firmware build time
-		*p_reg++ = FW_VERSION;						 // firmware version
-		*p_reg++ = st_conspicuity;					 // flashing status
-		*p_reg++ = st_flasherCurrent[FLASHER_UPPER]; // mA of flasher[0]
-		*p_reg++ = 0;								 // N/A
-		*p_reg++ = st_flasherCurrent[FLASHER_LOWER]; // mA of flasher[2]
-		*p_reg++ = 0;								 // N/A
-		*p_reg++ = st_lux[LUX_FRONT];				 // lightsenor
-		*p_reg++ = st_lux[LUX_BACK];
-
-		uint8_t *p = sp1TxBuf;
-		*p++ = SLV_ID;
-		*p++ = sp1RxBuf[CMD_INDEX_CODE];
-		*p++ = len04 * 2;
-		for (int i = 0; i < len04; i++)
-		{
-			p = Cnvt_PutU16hl(in_reg[i + addr], p);
-		}
-		txlen = p - sp1TxBuf;
-	}
-	return txlen;
-}
-
-int Response06()
-{
-	memcpy(sp1TxBuf, sp1RxBuf, 6);
-	return 6;
-}
-
-int CMD_WriteSingleRegister(int len)
-{
-#define CMD_06_ADDR 2
-#define CMD_06_VALUE 4
-	uint16_t addr = Cnvt_GetU16hl(sp1RxBuf + CMD_06_ADDR);
-	uint16_t value = Cnvt_GetU16hl(sp1RxBuf + CMD_06_VALUE);
-	int txlen;
-	switch (addr)
-	{
-	case 0:
-		if (value == FLASHER_ALL_OFF || value == FLASHER_LEFT_RIGHT || value == FLASHER_ALL_FLASH || value == FLASHER_ALL_ON || value == FLASHER_1ON_2FL)
-		{
-			conspicuity_changed = 1;
-			st_conspicuity = value;
-			txlen = Response06();
-		}
-		else
-		{
-			txlen = ModbusException(INVALID_VALUE);
-		}
-		break;
-	case 1:
-		if (value >= 0 && value <= 255)
-		{
-			pwm_changed = 1;
-			st_pwm = value;
-			txlen = Response06();
-		}
-		else
-		{
-			txlen = ModbusException(INVALID_VALUE);
-		}
-		break;
-	default:
-		txlen = ModbusException(INVALID_ADDRESS);
-		break;
-	}
-	return txlen;
-}
 #endif
 
 void TaskSpInit()

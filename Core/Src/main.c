@@ -104,7 +104,8 @@ int main(void)
   MX_TIM15_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start(&htim14);
-  extern TasksRun(void);
+  HAL_TIM_Base_Start(&htim15);
+  extern void TasksRun(void);
   TasksRun();
   /* USER CODE END 2 */
 

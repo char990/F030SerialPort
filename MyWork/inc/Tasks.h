@@ -23,7 +23,7 @@ extern "C"
 
     extern uint8_t wdt;
 
-    void TasksRun();
+    void TasksRun(void);
 
     extern uint8_t conspicuity_changed;
     extern uint8_t st_conspicuity;

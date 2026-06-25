@@ -15,7 +15,7 @@ extern "C" {
 #include "MyPt.h"
 
 void TaskSpInit();
-uint8_t TaskSp();
+uint8_t TaskSpRx();
 
 #ifdef __cplusplus
 }

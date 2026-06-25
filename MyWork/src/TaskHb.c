@@ -8,7 +8,6 @@
 #include "MyTmr.h"
 #include "main.h"
 #include "Tasks.h"
-#include "iwdg.h"
 
 myPt_t ptHb;
 #define this_pt (&ptHb)
@@ -32,9 +31,6 @@ uint8_t TaskHb()
 		if (wdt == TASK_ALL)
 		{
 			wdt = 0;
-#ifndef DEBUG
-			HAL_IWDG_Refresh(&hiwdg);
-#endif
 		}
 	}
 	PT_END(this_pt);

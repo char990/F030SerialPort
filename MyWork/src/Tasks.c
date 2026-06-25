@@ -8,10 +8,6 @@
 #include "Tasks.h"
 #include "TaskHb.h"
 #include "TaskSp.h"
-#include "TaskFlasher.h"
-#include "TaskLitSnsr.h"
-
-#include "Pwm.h"
 
 uint8_t wdt;
 
@@ -28,14 +24,10 @@ void TasksRun()
 {
 	TaskHbInit();
 	TaskSpInit();
-	TaskLitSnsrInit();
-	TaskFlasherInit();
 
 	while (1)
 	{
 		TaskHb();
-		TaskSp();
-		TaskFlasher();
-		TaskLitSnsr();
+		TaskSpRx();
 	};
 }

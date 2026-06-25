@@ -5,24 +5,19 @@
 
 #include "Critical.h"
 
+#include "RingBuffer.h"
+
 #define SERIAL_PORT_SEND_YIELD() \
 	do                           \
 	{                            \
 	} while (0)
 
-/* tx & rx dma buffer should be set as Non-cached in MPU*/
-/* 'section' is set in STM32H723ZGTX_FLASH.ld*/
-#define UART_TX_CACHE_BLOCKS 8
-#define UART_TX_DMA_BUF_SIZE (32 * UART_TX_CACHE_BLOCKS)
 static volatile uint8_t sp_tx_dma_buf[TOTAL_SERIALPORT][UART_TX_DMA_BUF_SIZE];
+static volatile uint8_t sp_tx_buf[TOTAL_SERIALPORT][UART_TX_BUF_SIZE];
 
-#define UART_RX_CACHE_BLOCKS 8
-#define UART_RX_DMA_BUF_SIZE (32 * UART_RX_CACHE_BLOCKS)
-#define UART_RX_DMA_BUF_SIZE_HALF (UART_RX_DMA_BUF_SIZE / 2)
 // double buffer for rx
 static volatile uint8_t sp_rx_dma_buf[TOTAL_SERIALPORT][UART_RX_DMA_BUF_SIZE];
 
-#define UART_RX_BUF_SIZE (256)
 static volatile uint8_t sp_rx_buf[TOTAL_SERIALPORT][UART_RX_BUF_SIZE];
 
 #define TX_TIMEOUT_Factor 5
@@ -93,6 +88,7 @@ void SerialPortInit()
 		serialPort[i].tx_dma_buf = &sp_tx_dma_buf[i][0];
 		serialPort[i].rx_dma_buf = &sp_rx_dma_buf[i][0];
 		RB_Init(&serialPort[i].rx_ringbuf, &sp_rx_buf[i][0], UART_RX_BUF_SIZE);
+		RB_Init(&serialPort[i].tx_ringbuf, &sp_tx_buf[i][0], UART_TX_BUF_SIZE);
 		serialPort[i].error_code = HAL_UART_ERROR_NONE;
 		serialPort[i].flag = 0;
 	}
@@ -102,8 +98,9 @@ void SerialPortSetBps(SerialPort_t *sp, uint32_t v)
 {
 	HAL_UART_Abort(sp->huart);
 	RB_Clear(&sp->rx_ringbuf);
+	RB_Clear(&sp->tx_ringbuf);
 	HAL_UART_DeInit(sp->huart);
-	//My_USART1_UART_Init(v);
+	// My_USART1_UART_Init(v);
 	extern void MX_USART1_UART_Init();
 	MX_USART1_UART_Init();
 	sp->error_code = HAL_UART_ERROR_NONE;
@@ -160,6 +157,7 @@ void SpErrorCheck(SerialPort_t *sp)
 
 void SpWrite(SerialPort_t *sp, const uint8_t *buf, int len)
 {
+#if 0
 	uint32_t time_start;
 	HAL_StatusTypeDef st;
 	SpErrorCheck(sp);
@@ -189,6 +187,37 @@ void SpWrite(SerialPort_t *sp, const uint8_t *buf, int len)
 		buf += xlen;
 	};
 	return;
+#else
+	while (RB_Space_Free(&sp->tx_ringbuf) < len)
+	{
+		SERIAL_PORT_SEND_YIELD();
+		SpErrorCheck(sp);
+	}
+	ATOMIC_CODE()
+	{
+		int xlen = 0;
+		HAL_StatusTypeDef st = HAL_OK;
+		if (sp->huart->gState == HAL_UART_STATE_READY)
+		{
+			xlen = (len < UART_TX_DMA_BUF_SIZE) ? len : UART_TX_DMA_BUF_SIZE;
+			memcpy(sp->tx_dma_buf, buf, xlen);
+			buf += xlen;
+			len -= xlen;
+			st = HAL_UART_Transmit_DMA(sp->huart, sp->tx_dma_buf, xlen);
+			if (st != HAL_OK)
+			{
+				sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
+			}
+		}
+		if (st == HAL_OK)
+		{
+			if (len > 0)
+			{
+				RB_Push(&sp->tx_ringbuf, buf, len);
+			}
+		}
+	}
+#endif
 }
 
 int SpRead(SerialPort_t *sp, uint8_t *buf, int len)
@@ -268,4 +297,22 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 		SerialPortStartRx(sp);
 	}
 	return;
+}
+
+void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
+{
+	SerialPort_t *sp = GetSerialPort(huart);
+	int len = RB_Space_Used(&sp->tx_ringbuf);
+	if (len > 0)
+	{
+		if (sp->huart->gState == HAL_UART_STATE_READY)
+		{
+			int xlen = (len < UART_TX_DMA_BUF_SIZE) ? len : UART_TX_DMA_BUF_SIZE;
+			RB_Pop(&sp->tx_ringbuf, sp->tx_dma_buf, xlen);
+			if (HAL_UART_Transmit_DMA(sp->huart, sp->tx_dma_buf, xlen) != HAL_OK)
+			{
+				sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
+			}
+		}
+	}
 }

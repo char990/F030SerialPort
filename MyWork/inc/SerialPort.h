@@ -17,10 +17,17 @@ extern "C"
 		uint8_t *tx_dma_buf;
 		uint8_t *rx_dma_buf;
 		RingBuffer_t rx_ringbuf;
+		RingBuffer_t tx_ringbuf;
 		volatile uint32_t error_code;
 		uint32_t tx_timeout;
 		uint32_t flag;
 	} SerialPort_t;
+
+#define UART_TX_DMA_BUF_SIZE (32)
+#define UART_TX_BUF_SIZE (256)
+#define UART_RX_DMA_BUF_SIZE (32)
+#define UART_RX_DMA_BUF_SIZE_HALF (UART_RX_DMA_BUF_SIZE / 2)
+#define UART_RX_BUF_SIZE (256)
 
 #define TOTAL_SERIALPORT 1
 
