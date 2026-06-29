@@ -5,31 +5,14 @@
 
 #include "Critical.h"
 
-#include "RingBuffer.h"
-
 #define SERIAL_PORT_SEND_YIELD() \
 	do                           \
 	{                            \
 	} while (0)
 
-static volatile uint8_t sp_tx_dma_buf[TOTAL_SERIALPORT][UART_TX_DMA_BUF_SIZE];
-static volatile uint8_t sp_tx_buf[TOTAL_SERIALPORT][UART_TX_BUF_SIZE];
+static volatile uint8_t sp_tx_buf[TOTAL_SERIALPORT][UART_TX_BUF_SIZE] __attribute__((aligned(4)));
 
-// double buffer for rx
-static volatile uint8_t sp_rx_dma_buf[TOTAL_SERIALPORT][UART_RX_DMA_BUF_SIZE];
-
-static volatile uint8_t sp_rx_buf[TOTAL_SERIALPORT][UART_RX_BUF_SIZE];
-
-#define TX_TIMEOUT_Factor 5
-#define TX_TIMEOUT_BPS(v) (UART_TX_DMA_BUF_SIZE * TX_TIMEOUT_Factor * 10 * 1000 / v)
-
-// for 9600, timeout is 666ms
-#define TX_TIMEOUT_BPS9600 TX_TIMEOUT_BPS(9600)
-
-// for 115200, timeout is 55ms
-#define TX_TIMEOUT_BPS115200 TX_TIMEOUT_BPS(115200)
-
-#define HAL_ERROR_FLAG (1 << 31)
+static volatile uint8_t sp_rx_buf[TOTAL_SERIALPORT][UART_RX_BUF_SIZE] __attribute__((aligned(4)));
 
 extern UART_HandleTypeDef huart1;
 extern DMA_HandleTypeDef hdma_usart1_rx;
@@ -72,12 +55,22 @@ SerialPort_t serialPort[TOTAL_SERIALPORT];
 UART_HandleTypeDef *HUARTS[TOTAL_SERIALPORT] =
 	{
 		&huart1,
-
 };
+
 DMA_HandleTypeDef *HDMA_UART_RXS[TOTAL_SERIALPORT] =
 	{
 		&hdma_usart1_rx,
 };
+
+void ClearSpBuf(sp_buf_t *sp_buf)
+{
+	ATOMIC_CODE()
+	{
+		sp_buf->cnt = 0;
+		sp_buf->status = 0;
+		sp_buf->head = sp_buf->tail = sp_buf->dma_buf;
+	}
+}
 
 void SerialPortInit()
 {
@@ -85,10 +78,12 @@ void SerialPortInit()
 	{
 		serialPort[i].huart = HUARTS[i];
 		serialPort[i].hdma_rx = HDMA_UART_RXS[i];
-		serialPort[i].tx_dma_buf = &sp_tx_dma_buf[i][0];
-		serialPort[i].rx_dma_buf = &sp_rx_dma_buf[i][0];
-		RB_Init(&serialPort[i].rx_ringbuf, &sp_rx_buf[i][0], UART_RX_BUF_SIZE);
-		RB_Init(&serialPort[i].tx_ringbuf, &sp_tx_buf[i][0], UART_TX_BUF_SIZE);
+		serialPort[i].tx_buf.size = UART_TX_BUF_SIZE;
+		serialPort[i].tx_buf.dma_buf = &sp_tx_buf[i][0];
+		ClearSpBuf(&serialPort[i].tx_buf);
+		serialPort[i].rx_buf.size = UART_RX_BUF_SIZE;
+		serialPort[i].rx_buf.dma_buf = &sp_rx_buf[i][0];
+		ClearSpBuf(&serialPort[i].rx_buf);
 		serialPort[i].error_code = HAL_UART_ERROR_NONE;
 		serialPort[i].flag = 0;
 	}
@@ -97,14 +92,13 @@ void SerialPortInit()
 void SerialPortSetBps(SerialPort_t *sp, uint32_t v)
 {
 	HAL_UART_Abort(sp->huart);
-	RB_Clear(&sp->rx_ringbuf);
-	RB_Clear(&sp->tx_ringbuf);
+	ClearSpBuf(&sp->tx_buf);
+	ClearSpBuf(&sp->rx_buf);
 	HAL_UART_DeInit(sp->huart);
 	// My_USART1_UART_Init(v);
 	extern void MX_USART1_UART_Init();
 	MX_USART1_UART_Init();
 	sp->error_code = HAL_UART_ERROR_NONE;
-	sp->tx_timeout = TX_TIMEOUT_BPS(v);
 	sp->flag = 0;
 }
 
@@ -155,69 +149,57 @@ void SpErrorCheck(SerialPort_t *sp)
 	}
 }
 
-void SpWrite(SerialPort_t *sp, const uint8_t *buf, int len)
+HAL_StatusTypeDef SP_Start_TX_DMA(SerialPort_t *sp)
 {
-#if 0
-	uint32_t time_start;
+	sp_buf_t *buf = &sp->tx_buf;
+	if ((buf->status & SP_STATUS_BUSY) || (buf->cnt <= 0))
+		return HAL_OK;
+	buf->status |= SP_STATUS_BUSY;
+	int available_len;
+	if (buf->head >= buf->tail)
+	{
+		available_len = buf->head - buf->tail;
+	}
+	else
+	{
+		available_len = (buf->dma_buf + buf->size) - buf->tail;
+	}
+	buf->temp = (available_len > buf->cnt) ? buf->cnt : available_len;
+	HAL_StatusTypeDef st = HAL_UART_Transmit_DMA(sp->huart, buf->tail, buf->temp);
+	if (st != HAL_OK)
+	{
+		sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
+	}
+	return st;
+}
+
+HAL_StatusTypeDef SpWrite(SerialPort_t *sp, const uint8_t *data, int len)
+{
 	HAL_StatusTypeDef st;
-	SpErrorCheck(sp);
-	while (len > 0)
+	sp_buf_t *buf = &sp->tx_buf;
+	for (int i = 0; i < len; i++)
 	{
-		time_start = HAL_GetTick();
-		while (sp->huart->gState != HAL_UART_STATE_READY)
+		while (buf->cnt >= buf->size)
 		{
-			SERIAL_PORT_SEND_YIELD();
-			if ((HAL_GetTick() - time_start) > sp->tx_timeout)
+			if (!(buf->status & SP_STATUS_BUSY))
 			{
-				sp->error_code = HAL_ERROR_FLAG;
-				return;
+				ATOMIC_CODE() { st = SP_Start_TX_DMA(sp); }
+				if (st != HAL_OK)
+				{
+					return st;
+				}
 			}
 		}
-		int xlen = (len < UART_TX_DMA_BUF_SIZE) ? len : UART_TX_DMA_BUF_SIZE;
-		memcpy(sp->tx_dma_buf, buf, xlen);
-		ENTER_CRITICAL();
-		st = HAL_UART_Transmit_DMA(sp->huart, sp->tx_dma_buf, xlen);
-		EXIT_CRITICAL();
-		if (st != HAL_OK)
+		*buf->head = data[i];
+		buf->head++;
+		if (buf->head >= (buf->dma_buf + buf->size))
 		{
-			sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
-			return;
+			buf->head = buf->dma_buf;
 		}
-		len -= xlen;
-		buf += xlen;
-	};
-	return;
-#else
-	while (RB_Free(&sp->tx_ringbuf) < len)
-	{
-		SERIAL_PORT_SEND_YIELD();
-		SpErrorCheck(sp);
+		ATOMIC_CODE() { buf->cnt++; }
 	}
-	ATOMIC_CODE()
-	{
-		int xlen = 0;
-		HAL_StatusTypeDef st = HAL_OK;
-		if (sp->huart->gState == HAL_UART_STATE_READY)
-		{
-			xlen = (len < UART_TX_DMA_BUF_SIZE) ? len : UART_TX_DMA_BUF_SIZE;
-			memcpy(sp->tx_dma_buf, buf, xlen);
-			buf += xlen;
-			len -= xlen;
-			st = HAL_UART_Transmit_DMA(sp->huart, sp->tx_dma_buf, xlen);
-			if (st != HAL_OK)
-			{
-				sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
-			}
-		}
-		if (st == HAL_OK)
-		{
-			if (len > 0)
-			{
-				RB_Push(&sp->tx_ringbuf, buf, len);
-			}
-		}
-	}
-#endif
+	ATOMIC_CODE() { st = SP_Start_TX_DMA(sp); }
+	return st;
 }
 
 int SpRead(SerialPort_t *sp, uint8_t *buf, int len)
@@ -302,17 +284,17 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
 	SerialPort_t *sp = GetSerialPort(huart);
-	int len = RB_Count(&sp->tx_ringbuf);
-	if (len > 0)
+	sp_buf_t *buf = &sp->tx_buf;
+	int sent = buf->temp;
+	buf->tail += sent;
+	if (buf->tail >= (buf->dma_buf + buf->size))
 	{
-		if (sp->huart->gState == HAL_UART_STATE_READY)
-		{
-			int xlen = (len < UART_TX_DMA_BUF_SIZE) ? len : UART_TX_DMA_BUF_SIZE;
-			RB_Pop(&sp->tx_ringbuf, sp->tx_dma_buf, xlen);
-			if (HAL_UART_Transmit_DMA(sp->huart, sp->tx_dma_buf, xlen) != HAL_OK)
-			{
-				sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
-			}
-		}
+		buf->tail -= buf->size;
+	}
+	buf->cnt -= sent;
+	buf->status &= ~SP_STATUS_BUSY;
+	if (SP_Start_TX_DMA(sp) != HAL_OK)
+	{
+		sp->error_code = HAL_ERROR_FLAG | sp->huart->ErrorCode;
 	}
 }

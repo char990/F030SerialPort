@@ -407,21 +407,20 @@ static void this_Init()
 
 #ifdef TASK_SLV
 
-
 char test_buf[128];
 
 static void this_Init()
 {
 	char *p = test_buf;
-	for(int i=0;i<10;i++)
+	for (int i = 0; i < 10; i++)
 	{
-		for(int j=0;j<10;j++)
+		for (int j = 0; j < 10; j++)
 		{
 			*p++ = j + '0';
 		}
 	}
-	*p++='\n';
-	*p=0;
+	*p++ = '\n';
+	*p = 0;
 	SerialPortStartRx(this_sp);
 }
 
@@ -429,22 +428,32 @@ __attribute__((aligned(4))) volatile uint16_t adc_raw[ADC_LENGTH];
 __attribute__((aligned(4))) uint16_t adc_zero_phase[ADC_LENGTH];
 __attribute__((aligned(4))) uint16_t adc_forward[ADC_LENGTH];
 
+uint32_t t1, t2;
 uint8_t TaskSpRx()
 {
-	for(int i=0;i<20;i++)
-	{
-		MyPrintf("%04d: ", i);
-		MyPuts(test_buf);
-	}
 	PT_BEGIN(this_pt);
 	for (;;)
 	{
+		MyPuts("Enter any key to continue...");
+		PT_WAIT_UNTIL(this_pt, SpAnyChars(this_sp));
+		SpGetchar(this_sp);
+		t1 = HAL_GetTick();
+		for (int i = 0; i < 1868; i++)
+		{
+			MyPrintf("%04d: ", i);
+			MyPuts(test_buf);
+		}
+		SpFlush(this_sp);
+		t2 = HAL_GetTick();
+		MyPrintf("t1=%u, t2=%u, t2-t1=%u\n", t1, t2, t2 - t1);
+		PT_WAIT_UNTIL(this_pt, SpAnyChars(this_sp));
+		SpGetchar(this_sp);
 		SpErrorCheck(this_sp);
 		wdt |= WDT_TASK_SP;
 		// if (this_sp->flag == 1)
 		{
-			this_sp->flag = 0;
-			RB_Clear(&this_sp->rx_ringbuf);
+			// this_sp->flag = 0;
+			// RB_Clear(&this_sp->rx_ringbuf);
 			SetMsTmr(this_tmr, 50);
 			start_rms_adc(adc_raw);
 			PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr) || rms_flag == 1);
