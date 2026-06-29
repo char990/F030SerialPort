@@ -407,8 +407,21 @@ static void this_Init()
 
 #ifdef TASK_SLV
 
+
+char test_buf[128];
+
 static void this_Init()
 {
+	char *p = test_buf;
+	for(int i=0;i<10;i++)
+	{
+		for(int j=0;j<10;j++)
+		{
+			*p++ = j + '0';
+		}
+	}
+	*p++='\n';
+	*p=0;
 	SerialPortStartRx(this_sp);
 }
 
@@ -418,6 +431,11 @@ __attribute__((aligned(4))) uint16_t adc_forward[ADC_LENGTH];
 
 uint8_t TaskSpRx()
 {
+	for(int i=0;i<20;i++)
+	{
+		MyPrintf("%04d: ", i);
+		MyPuts(test_buf);
+	}
 	PT_BEGIN(this_pt);
 	for (;;)
 	{

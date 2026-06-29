@@ -36,10 +36,10 @@ uint8_t RB_Pop_c(RingBuffer_t *prb);
 int RB_Pop(RingBuffer_t *prb, uint8_t *outbuf, int len);
 
 /* free space in rb */
-int RB_Space_Free(const RingBuffer_t *prb);
+int RB_Free(const RingBuffer_t *prb);
 
 /* used space in rb */
-int RB_Space_Used(const RingBuffer_t *prb);
+int RB_Count(const RingBuffer_t *prb);
 
 #ifdef __cplusplus
 }

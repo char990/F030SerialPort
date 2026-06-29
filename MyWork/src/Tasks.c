@@ -9,6 +9,8 @@
 #include "TaskHb.h"
 #include "TaskSp.h"
 
+#include "MyPrintf.h"
+
 uint8_t wdt;
 
 uint8_t conspicuity_changed;
@@ -24,6 +26,8 @@ void TasksRun()
 {
 	TaskHbInit();
 	TaskSpInit();
+
+	MyPrintf("\nBuild = %s %s\n", __DATE__, __TIME__);
 
 	while (1)
 	{

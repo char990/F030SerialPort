@@ -188,7 +188,7 @@ void SpWrite(SerialPort_t *sp, const uint8_t *buf, int len)
 	};
 	return;
 #else
-	while (RB_Space_Free(&sp->tx_ringbuf) < len)
+	while (RB_Free(&sp->tx_ringbuf) < len)
 	{
 		SERIAL_PORT_SEND_YIELD();
 		SpErrorCheck(sp);
@@ -231,12 +231,12 @@ int SpRead(SerialPort_t *sp, uint8_t *buf, int len)
 int SpAnyChars(SerialPort_t *sp)
 {
 	SpErrorCheck(sp);
-	return RB_Space_Used(&sp->rx_ringbuf);
+	return RB_Count(&sp->rx_ringbuf);
 }
 
 char SpGetchar(SerialPort_t *sp)
 {
-	while (RB_Space_Used(&sp->rx_ringbuf) == 0)
+	while (RB_Count(&sp->rx_ringbuf) == 0)
 	{
 		SERIAL_PORT_SEND_YIELD();
 		SpErrorCheck(sp);
@@ -302,7 +302,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
 	SerialPort_t *sp = GetSerialPort(huart);
-	int len = RB_Space_Used(&sp->tx_ringbuf);
+	int len = RB_Count(&sp->tx_ringbuf);
 	if (len > 0)
 	{
 		if (sp->huart->gState == HAL_UART_STATE_READY)
