@@ -25,12 +25,12 @@ int MyPrintf(const char *fmt, ...)
 
 int MyPutchar(const char c)
 {
-	return SpPutchar(&serialPort[0], c);
+	return SpPutchar(serialPort[0], c);
 }
 
 int MyPuts(const char *s)
 {
-	return SpPuts(&serialPort[0], s);
+	return SpPuts(serialPort[0], s);
 }
 
 static void Print_abcd(const char *abcd)

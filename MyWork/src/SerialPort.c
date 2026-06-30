@@ -10,14 +10,26 @@
 	{                            \
 	} while (0)
 
-static volatile uint8_t sp_tx_buf[TOTAL_SERIALPORT][UART_TX_BUF_SIZE] __attribute__((aligned(4)));
-
-static volatile uint8_t sp_rx_buf[TOTAL_SERIALPORT][UART_RX_BUF_SIZE] __attribute__((aligned(4)));
-
-extern UART_HandleTypeDef huart1;
-extern DMA_HandleTypeDef hdma_usart1_rx;
-extern DMA_HandleTypeDef hdma_usart1_tx;
 extern void Error_Handler();
+
+
+#define SP_DEF(n) \
+	extern UART_HandleTypeDef CATAB(huart, n); \
+    static uint8_t CATAB(sp, CATAB(n, _tx_buf))[CATAB(SP, CATAB(n, _TX_BUF_SIZE))] __attribute__((aligned(4))); \
+    static uint8_t CATAB(sp, CATAB(n, _rx_buf))[CATAB(SP, CATAB(n, _RX_BUF_SIZE))] __attribute__((aligned(4))); \
+    static SerialPort_t CATAB(sp, n) = { \
+        .huart = &CATAB(huart, n), \
+        .tx_buf = { .size = CATAB(SP, CATAB(n, _TX_BUF_SIZE)), .dma_buf = CATAB(sp, CATAB(n, _tx_buf)), \
+                    .head = CATAB(sp, CATAB(n, _tx_buf)), .tail = CATAB(sp, CATAB(n, _tx_buf)), .cnt = 0 }, \
+        .rx_buf = { .size = CATAB(SP, CATAB(n, _RX_BUF_SIZE)), .dma_buf = CATAB(sp, CATAB(n, _rx_buf)), \
+                    .head = CATAB(sp, CATAB(n, _rx_buf)), .tail = CATAB(sp, CATAB(n, _rx_buf)), .cnt = 0 } \
+    };
+
+#define SP1_TX_BUF_SIZE 256
+#define SP1_RX_BUF_SIZE 256
+SP_DEF(1)
+
+SerialPort_t *const serialPort[TOTAL_SERIALPORT] = {&sp1};
 
 /* USART1 init function */
 #if 0
@@ -50,25 +62,19 @@ void My_USART1_UART_Init(uint32_t bps)
 	/* USER CODE END USART1_Init 2 */
 }
 #endif
-SerialPort_t serialPort[TOTAL_SERIALPORT];
 
-UART_HandleTypeDef *HUARTS[TOTAL_SERIALPORT] =
-	{
-		&huart1,
-};
-
-DMA_HandleTypeDef *HDMA_UART_RXS[TOTAL_SERIALPORT] =
-	{
-		&hdma_usart1_rx,
-};
-
-void ClearSpBuf(sp_buf_t *sp_buf)
+void SerialPortClear(SerialPort_t *sp)
 {
+	sp->error_code = HAL_UART_ERROR_NONE;
+	sp->flag = 0;
+	sp_buf_t *buf[2] = {&sp->tx_buf, &sp->tx_buf};
 	ATOMIC_CODE()
 	{
-		sp_buf->cnt = 0;
-		sp_buf->status = 0;
-		sp_buf->head = sp_buf->tail = sp_buf->dma_buf;
+		for (int i = 0; i < 2; i++)
+		{
+			buf[i]->cnt = buf[i]->status = buf[i]->temp = 0;
+			buf[i]->head = buf[i]->tail = buf[i]->dma_buf;
+		}
 	}
 }
 
@@ -76,30 +82,18 @@ void SerialPortInit()
 {
 	for (int i = 0; i < TOTAL_SERIALPORT; i++)
 	{
-		serialPort[i].huart = HUARTS[i];
-		serialPort[i].hdma_rx = HDMA_UART_RXS[i];
-		serialPort[i].tx_buf.size = UART_TX_BUF_SIZE;
-		serialPort[i].tx_buf.dma_buf = &sp_tx_buf[i][0];
-		ClearSpBuf(&serialPort[i].tx_buf);
-		serialPort[i].rx_buf.size = UART_RX_BUF_SIZE;
-		serialPort[i].rx_buf.dma_buf = &sp_rx_buf[i][0];
-		ClearSpBuf(&serialPort[i].rx_buf);
-		serialPort[i].error_code = HAL_UART_ERROR_NONE;
-		serialPort[i].flag = 0;
+		SerialPortClear(serialPort[i]);
 	}
 }
 
 void SerialPortSetBps(SerialPort_t *sp, uint32_t v)
 {
 	HAL_UART_Abort(sp->huart);
-	ClearSpBuf(&sp->tx_buf);
-	ClearSpBuf(&sp->rx_buf);
 	HAL_UART_DeInit(sp->huart);
+	SerialPortClear(sp);
 	// My_USART1_UART_Init(v);
 	extern void MX_USART1_UART_Init();
 	MX_USART1_UART_Init();
-	sp->error_code = HAL_UART_ERROR_NONE;
-	sp->flag = 0;
 }
 
 void SerialPortStartRx(SerialPort_t *sp)
@@ -121,9 +115,9 @@ SerialPort_t *GetSerialPort(UART_HandleTypeDef *huart)
 {
 	for (int i = 0; i < TOTAL_SERIALPORT; i++)
 	{
-		if (huart == serialPort[i].huart)
+		if (huart == serialPort[i]->huart)
 		{
-			return &serialPort[i];
+			return serialPort[i];
 		}
 	}
 	return NULL;

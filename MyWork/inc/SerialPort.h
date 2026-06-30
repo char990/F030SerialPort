@@ -27,7 +27,6 @@ typedef struct sp_buf_t
 typedef struct SerialPort_t
 	{
 		UART_HandleTypeDef *huart;
-		DMA_HandleTypeDef *hdma_rx;
 		sp_buf_t tx_buf;
 		sp_buf_t rx_buf;
 		volatile uint32_t error_code;
@@ -37,7 +36,7 @@ typedef struct SerialPort_t
 
 #define TOTAL_SERIALPORT 1
 
-	extern SerialPort_t serialPort[TOTAL_SERIALPORT];
+	extern SerialPort_t *const serialPort[TOTAL_SERIALPORT];
 
 	void SerialPortInit(); // Init all serial ports
 	void SpErrorCheck(SerialPort_t *sp);

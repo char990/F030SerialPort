@@ -29,7 +29,7 @@ myPt_t ptSp;
 msTmr_t tmrSp;
 #define this_tmr (&tmrSp)
 
-#define this_sp (&serialPort[0])
+#define this_sp (serialPort[0])
 
 #ifdef TASK_CLI
 
