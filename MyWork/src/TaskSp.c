@@ -17,6 +17,7 @@
 #include "MyPrintf.h"
 #include "rms.h"
 #include "Tasks.h"
+#include "MyCrc.h"
 
 /********************************************/
 // #define TASK_CLI
@@ -407,20 +408,8 @@ static void this_Init()
 
 #ifdef TASK_SLV
 
-char test_buf[128];
-
 static void this_Init()
 {
-	char *p = test_buf;
-	for (int i = 0; i < 10; i++)
-	{
-		for (int j = 0; j < 10; j++)
-		{
-			*p++ = j + '0';
-		}
-	}
-	*p++ = '\n';
-	*p = 0;
 	SerialPortStartRx(this_sp);
 }
 
@@ -428,32 +417,71 @@ __attribute__((aligned(4))) volatile uint16_t adc_raw[ADC_LENGTH];
 __attribute__((aligned(4))) uint16_t adc_zero_phase[ADC_LENGTH];
 __attribute__((aligned(4))) uint16_t adc_forward[ADC_LENGTH];
 
-uint32_t t1, t2;
+int total_bytes = 0;
+int sec_bytes = 0;
+uint8_t rx_buf[64] __aligned(4);
+msTmr_t tmrSec;
+msTmr_t tmrCrc;
+int crc_bytes = 0;
+uint32_t crc_v;
+
 uint8_t TaskSpRx()
 {
 	PT_BEGIN(this_pt);
+	Crc32Init();
 	for (;;)
 	{
-		MyPuts("Enter any key to continue...");
-		PT_WAIT_UNTIL(this_pt, SpAnyChars(this_sp));
-		SpGetchar(this_sp);
-		t1 = HAL_GetTick();
-		for (int i = 0; i < 1868; i++)
 		{
-			MyPrintf("%04d: ", i);
-			MyPuts(test_buf);
+			int bytes = SpAnyChars(this_sp);
+			if (bytes > 0)
+			{
+				SetMsTmr(&tmrCrc, 3000);
+				for (int i = bytes; i > 0; i -= 64)
+				{
+					int len = SpRead(this_sp, rx_buf, 64);
+					total_bytes += len;
+					sec_bytes += len;
+					if (crc_bytes == 0)
+					{
+						crc_v = HAL_CRC_Calculate(&hcrc, (uint32_t *)rx_buf, len);
+					}
+					else
+					{
+						crc_v = HAL_CRC_Accumulate(&hcrc, (uint32_t *)rx_buf, len);
+					}
+					crc_bytes += len;
+				};
+			}
+			if (IsMsTmrExpired(&tmrSec) || IsMsTmrSet(&tmrSec) == 0)
+			{
+				SetMsTmr(&tmrSec, 1000);
+				if (sec_bytes)
+				{
+					MyPrintf("\n=>=>=> sec_bytes=%d, total_bytes=%d <=<=<=\n", sec_bytes, total_bytes);
+					sec_bytes = 0;
+				}
+			}
+			if (this_sp->error_code_bak)
+			{
+				MyPrintf("\n!!! sp_error_code = %08X !!!\n", this_sp->error_code_bak);
+				this_sp->error_code_bak = 0;
+			}
+			if (IsMsTmrExpired(&tmrCrc))
+			{
+				ClrMsTmr(&tmrCrc);
+				if (crc_bytes)
+				{
+					MyPrintf("\n*** crc_bytes = %d, crc_v = %08X ***\n", crc_bytes, CRC32Get(crc_v));
+					crc_bytes = 0;
+				}
+			}
+
+			SetMsTmr(this_tmr, 10);
+			PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr));
+			continue;
 		}
-		SpFlush(this_sp);
-		t2 = HAL_GetTick();
-		MyPrintf("t1=%u, t2=%u, t2-t1=%u\n", t1, t2, t2 - t1);
-		PT_WAIT_UNTIL(this_pt, SpAnyChars(this_sp));
-		SpGetchar(this_sp);
-		SpErrorCheck(this_sp);
 		wdt |= WDT_TASK_SP;
-		// if (this_sp->flag == 1)
 		{
-			// this_sp->flag = 0;
-			// RB_Clear(&this_sp->rx_ringbuf);
 			SetMsTmr(this_tmr, 50);
 			start_rms_adc(adc_raw);
 			PT_WAIT_UNTIL(this_pt, IsMsTmrExpired(this_tmr) || rms_flag == 1);
@@ -503,7 +531,10 @@ uint8_t TaskSpRx()
 
 void TaskSpInit()
 {
-	SerialPortInit();
+	for (int i = 0; i < TOTAL_SERIALPORT; i++)
+	{
+		SerialPortClear(serialPort[i]);
+	}
 	PT_Reset(this_pt);
 	this_Init();
 }

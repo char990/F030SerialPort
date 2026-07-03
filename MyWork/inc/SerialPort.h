@@ -8,12 +8,13 @@ extern "C"
 
 #include "stm32f0xx_hal.h"
 
-#define HAL_ERROR_FLAG (1 << 31)
-#define SP_STATUS_BUSY (1<<0) 
-#define UART_TX_BUF_SIZE (256)
-#define UART_RX_BUF_SIZE (256)
+#define TOTAL_SERIALPORT 1
 
-typedef struct sp_buf_t
+#define SP_FLAGS_TX_BUSY (1 << 0)
+#define SP_FLAGS_RX_IDLE (1 << 1)
+#define SP_FLAGS_HAL_ERR (1 << 2)
+
+	typedef struct sp_buf_t
 	{
 		int size;
 		uint8_t *dma_buf;
@@ -21,30 +22,25 @@ typedef struct sp_buf_t
 		volatile uint8_t *tail;
 		volatile int cnt;
 		volatile int temp;
-		volatile uint32_t status;
 	} sp_buf_t;
 
-typedef struct SerialPort_t
+	typedef struct SerialPort_t
 	{
 		UART_HandleTypeDef *huart;
 		sp_buf_t tx_buf;
 		sp_buf_t rx_buf;
 		volatile uint32_t error_code;
-		volatile uint32_t flag;
+		volatile uint32_t error_code_bak;
+		volatile uint32_t flags;
+		void (*MX_Init)(uint32_t bps);
 	} SerialPort_t;
-
-
-#define TOTAL_SERIALPORT 1
 
 	extern SerialPort_t *const serialPort[TOTAL_SERIALPORT];
 
-	void SerialPortInit(); // Init all serial ports
+	void SerialPortClear(SerialPort_t *sp);
 	void SpErrorCheck(SerialPort_t *sp);
 
 	SerialPort_t *GetSerialPort(UART_HandleTypeDef *huart);
-	int IsSerialPortRx(SerialPort_t *sp);
-
-	void SerialPortSetBps(SerialPort_t *sp, uint32_t v);
 
 	void SerialPortStartRx(SerialPort_t *sp);
 
