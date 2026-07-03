@@ -1,6 +1,6 @@
 #include "MyCrc.h"
 
-#ifdef CRC32_ETHERNET
+#if (CRC32_USING == CRC32_ETHERNET)
 void Crc32Init()
 {
     HAL_CRCEx_Input_Data_Reverse(&hcrc, CRC_INPUTDATA_INVERSION_BYTE);
@@ -10,7 +10,7 @@ uint32_t CRC32Get(uint32_t v)
 {
     return v ^ 0xFFFFFFFF;
 }
-#elifdef CRC32_BZIP2
+#elif (CRC32_USING == CRC32_BZIP2)
 void Crc32Init()
 {
     HAL_CRCEx_Input_Data_Reverse(&hcrc, CRC_INPUTDATA_INVERSION_NONE);
@@ -20,7 +20,7 @@ uint32_t CRC32Get(uint32_t v)
 {
     return v ^ 0xFFFFFFFF;
 }
-#elifdef CRC32_MPEG2
+#elif (CRC32_USING == CRC32_MPEG2)
 void Crc32Init()
 {
     HAL_CRCEx_Input_Data_Reverse(&hcrc, CRC_INPUTDATA_INVERSION_NONE);
